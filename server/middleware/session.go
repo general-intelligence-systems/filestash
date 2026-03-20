@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"text/template"
 	"time"
 
 	. "github.com/mickael-kerjean/filestash/server/common"
@@ -288,6 +289,13 @@ func _extractSession(req *http.Request, ctx *App) (map[string]string, error) {
 		return session, err
 	}
 
+	// reverse proxy forward auth: if Remote-User header is set, build the
+	// session directly from the attribute mapping config using the header
+	// values as template variables, bypassing cookies entirely
+	if remoteUser := req.Header.Get("Remote-User"); remoteUser != "" {
+		return _sessionFromProxy(req)
+	}
+
 	if ctx.Authorization == "" {
 		return session, nil
 	}
@@ -309,6 +317,52 @@ func _extractSession(req *http.Request, ctx *App) (map[string]string, error) {
 		return session, ErrNotAuthorized
 	}
 	return session, err
+}
+
+func _sessionFromProxy(req *http.Request) (map[string]string, error) {
+	templateBind := map[string]string{
+		"user":   req.Header.Get("Remote-User"),
+		"name":   req.Header.Get("Remote-Name"),
+		"email":  req.Header.Get("Remote-Email"),
+		"groups": req.Header.Get("Remote-Groups"),
+	}
+	globalMapping := map[string]map[string]interface{}{}
+	if err := json.Unmarshal(
+		[]byte(Config.Get("middleware.attribute_mapping.params").String()),
+		&globalMapping,
+	); err != nil {
+		Log.Warning("middleware::session::proxy 'attribute mapping error' %s", err.Error())
+		return nil, err
+	}
+	// use the first available mapping
+	var mapping map[string]interface{}
+	for _, m := range globalMapping {
+		mapping = m
+		break
+	}
+	if mapping == nil {
+		Log.Warning("middleware::session::proxy 'no attribute mapping configured'")
+		return nil, ErrNotValid
+	}
+	session := map[string]string{}
+	for k, v := range mapping {
+		s := NewStringFromInterface(v)
+		tmpl, err := template.New("").Parse(s)
+		if err != nil {
+			Log.Debug("middleware::session::proxy action=parse key=%s err=%s", k, err.Error())
+			session[k] = s
+			continue
+		}
+		var buf bytes.Buffer
+		if err = tmpl.Execute(&buf, templateBind); err != nil {
+			Log.Debug("middleware::session::proxy action=exec key=%s err=%s", k, err.Error())
+			session[k] = s
+			continue
+		}
+		session[k] = buf.String()
+	}
+	session["timestamp"] = time.Now().Format(time.RFC3339)
+	return session, nil
 }
 
 func _extractBackend(req *http.Request, ctx *App) (IBackend, error) {
