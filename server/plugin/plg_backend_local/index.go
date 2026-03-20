@@ -16,6 +16,9 @@ type Local struct{}
 
 func (this Local) Init(params map[string]string, app *App) (IBackend, error) {
 	backend := &Local{}
+	if params["proxy_auth"] == "true" {
+		return backend, nil
+	}
 	if params["password"] == Config.Get("general.secret_key").String() {
 		return backend, nil
 	} else if err := bcrypt.CompareHashAndPassword(

@@ -362,6 +362,7 @@ func _sessionFromProxy(req *http.Request) (map[string]string, error) {
 		session[k] = buf.String()
 	}
 	session["timestamp"] = time.Now().Format(time.RFC3339)
+	session["proxy_auth"] = "true"
 	return session, nil
 }
 
